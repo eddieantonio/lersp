@@ -7,6 +7,35 @@
 #define MAX_NAMES   256
 #define NAME_LENGTH 8
 
+/* Define built-in symbols. */
+#define COND    0
+#define DEFINE  1
+#define LABEL   2
+#define LAMBDA  3
+#define QUOTE   4
+#define EVAL    5
+#define APPLY   6
+#define S_CONS  7
+#define CAR     8
+#define CDR     9
+#define EQ      10
+#define ATOM    11
+#define S_NULL  12
+#define NOT     13
+#define AND     14
+#define OR      15
+#define PLUS    16
+#define NEG     17
+#define DIV     18
+#define MUL     19
+#define LT      20
+#define GT      21
+#define F       22
+#define T       23
+#define MAP     24
+#define REDUCE  25
+
+
 typedef unsigned int    l_symbol;
 typedef double          l_number;
 
@@ -61,7 +90,13 @@ void repl(void);
 /**
  * Evaluates an s-expression.
  */
-result eval(sexpr *);
+result eval(sexpr *expr, sexpr **environment);
+
+/**
+ * Finds the associated expression in the given environment.
+ * d
+ */
+result assoc(l_symbol symbol, sexpr *environment);
 
 /**
  * Print an s-expression on stdout.

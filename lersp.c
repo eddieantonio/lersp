@@ -27,7 +27,7 @@ static sexpr *global = NULL; // execution context?
 /* List of (identifier . name) pairs. */
 static sexpr *name_list = NULL;
 /* Amount of symbos left to use. */
-static int symbols_left = MAX_NAMES;
+static int next_symbol_id = 0;
 
 
 /*
@@ -65,16 +65,10 @@ void repl(void) {
             break;
         }
 
-        print(input.expr);
-
-        /* PSYCH! */
-        continue;
-        evaluation = eval(input.expr);
+        evaluation = eval(input.expr, &global);
 
         if (evaluation.status == OKAY) {
-            printf("; ");
             print(evaluation.expr);
-            puts("");
         } else {
             break;
         }
@@ -202,16 +196,40 @@ static void prepare_free_list(void) {
     next_free_cell = last_value;
 }
 
+/* Returns the symbol ID if it exists, else returns -1. */
+static l_symbol find_symbol_by_name(char *name) {
+    sexpr *current, *pair;
+
+    current = name_list;
+
+    while (current != NULL) {
+        pair = current->car;
+
+        if (strcmp(name, pair->cdr->word) == 0) {
+            return pair->car->symbol;           
+        }
+
+        current = current->cdr;
+    }
+
+    return -1;
+}
+
 static l_symbol insert_symbol(char *name) {
     sexpr *pair, *identifier, *word;
 
     assert(strlen(name) < NAME_LENGTH);
 
+    int id = find_symbol_by_name(name);
+    if (id != -1) {
+        return id;
+    }
+
     identifier = new_cell();
     identifier->type = SYMBOL;
-    identifier->symbol = --symbols_left;
+    identifier->symbol = next_symbol_id++;
 
-    if (!symbols_left) {
+    if (next_symbol_id >= MAX_NAMES) {
         fprintf(stderr, "Ran out of symbol memory. (Sorry %s) :C\n", name);
         fprintf(stderr, "Symbol dump: ");
         print(name_list);
@@ -230,14 +248,21 @@ static l_symbol insert_symbol(char *name) {
 }
 
 
+/* It's important to keep this table in sync with the definitions in the
+ * header file! */
 static char* INITIAL_SYMBOLS[] = {
-    "F", "T", "DEFINE", "LABEL", "LAMBDA",
-    "EVAL", "APPLY", "QUOTE",
+    "COND", "DEFINE", "LABEL", "LAMBDA", "QUOTE",
+
+    "EVAL", "APPLY",
     "CONS", "CAR", "CDR",
-    "EQ", "NULL", "NOT", "AND", "OR",
+
+    "EQ", "ATOM", "NULL", "NOT", "AND", "OR",
     "+", "-", "/", "*", "<", ">",
+
+    "F", "T",
     "MAP", "REDUCE"
 };
+
 
 static void insert_initial_symbols(void) {
     int i;
@@ -248,11 +273,11 @@ static void insert_initial_symbols(void) {
 
 static void prepare_execution_context(void) {
     /* IT BEGINS! */
-    //global = cons();
-
     insert_initial_symbols();
-    /* TODO: NOT THIS: */
-    global = name_list;
+
+    /* This is the initial binding list. */
+    /* There's nothing in it... */
+    global = NULL;
 }
 
 
@@ -483,6 +508,7 @@ static result parse_list(void) {
     }
 
     last = head = new_cell();
+    head->type = CONS;
     head->car = inner.expr;
 
     inner = l_read();
@@ -507,5 +533,133 @@ static result parse_list(void) {
     parse.status = OKAY;
     parse.expr = head;
     return parse;
+}
+
+
+
+static result eval_form(l_symbol symbol, sexpr *args, sexpr **env);
+
+result eval(sexpr *expr, sexpr **env) {
+    result evaluation;
+
+    if (expr->type == SYMBOL) {
+        return assoc(expr->symbol, *env);
+    } else if ((expr->type == CONS) && (expr->car->type == SYMBOL)) {
+        /* Try to evaluate a special form: */
+        return eval_form(expr->car->symbol, expr->cdr, env);
+    }
+    /* TODO: evlist. */
+
+    /* Otherwise, it just evaluates to itself. */
+    evaluation.expr = expr;
+    evaluation.status = OKAY;
+
+    return evaluation;
+}
+
+static sexpr* update_environment(sexpr **env, sexpr* symbol, sexpr *value);
+
+static result eval_form(l_symbol symbol, sexpr *args, sexpr **env) {
+    result evaluation;
+    evaluation.expr = NULL;
+    evaluation.status = OKAY;
+
+    /*
+     * Evaluate all special forms and built-in functions.
+     */
+    switch (symbol) {
+        case QUOTE:
+            evaluation.expr = args;
+            break;
+        case LAMBDA:
+            /* Make a lambda... */
+            break;
+        case LABEL:
+            /* I feel like this should be... void. */
+            if ((args == NULL)
+                    || (args->car == NULL)
+                    || (args->cdr == NULL)
+                    || (args->car->type != SYMBOL)) {
+
+                fprintf(stderr, "Invalid LABEL\n");
+                evaluation.status = HALT;
+                return evaluation;
+            }
+
+            evaluation.expr = eval(args->cdr, env).expr;
+            update_environment(env, args->car, evaluation.expr);
+
+            break;
+        case S_CONS:
+            evaluation.expr = cons(
+                    eval(args->car, env).expr,
+                    eval(args->cdr, env).expr);
+            return evaluation;
+        case COND:
+            //return evcond(args, env);
+        default:
+            evaluation.status = HALT;
+            evaluation.expr = NULL;
+            fprintf(stderr, "eval not defined.\n");
+    }
+
+    return evaluation;
+}
+
+static sexpr* update_environment(sexpr **env, sexpr* symbol, sexpr *value) {
+    sexpr *binding = new_cell();
+    binding->type = CONS;
+    binding->car = symbol;
+    binding->cdr = value;
+
+    printf("Updating enviroment: ");
+    display(*env);
+    puts("");
+
+    *env = cons(binding, *env);
+
+    printf("Environment is now: ");
+    display(*env);
+    puts("");
+
+    return *env;
+}
+
+static result evcon(sexpr *expr, sexpr *environment) {
+    result evaluation;
+
+    /* TODO */
+    evaluation.status = OKAY;
+    evaluation.expr = expr;
+
+    return evaluation;
+}
+
+/* This isn't quite programmed correctly... */
+result assoc(l_symbol symbol, sexpr *environment) {
+    sexpr *current, *pair;
+    result binding;
+
+    binding.status = HALT;
+    binding.expr = NULL;
+
+    if (environment == NULL) {
+        environment = global;
+    }
+
+    while (current != NULL) {
+        pair = current->car;
+
+        if (pair->car->symbol == symbol) {
+            /* Symbol is found! */
+            binding.expr = pair->cdr;
+            binding.status = OKAY;
+            return binding;
+        }
+
+        current = current->cdr;
+    }
+
+    return binding;
 }
 
