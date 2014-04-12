@@ -8,13 +8,14 @@
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <ctype.h>
 
 #include "lersp.h"
 
 static char INTRO_BANNER[] =
     "; Lersp\n"
     "; 2014 (c) eddieantonio.\n"
-    "; We may never know why.\n\n";
+    "; We may never know why.\n";
 
 /* Points to the next free cell in the free list. */
 static sexpr *next_free_cell;
@@ -52,19 +53,21 @@ void repl(void) {
     result evaluation;
 
     /* Development stuff. */
-    print(name_list);
-    
-    /* PSYCH! */
-    return;
+    printf("; sizeof sexpr: %ld\n", sizeof(sexpr));
+
 
     while (1) {
         printf("#=> ");
         input = l_read();
 
-        if (input.expr != OKAY) {
+        if (input.status != OKAY) {
             break;
         }
 
+        print(input.expr);
+
+        /* PSYCH! */
+        continue;
         evaluation = eval(input.expr);
 
         if (evaluation.status == OKAY) {
@@ -110,14 +113,13 @@ void display(sexpr* expr) {
         case WORD:
             /* DEBUG! `word` type is internal and not representable in program
              * text. */
-            printf("[%s]", expr->word);
+            printf("\033[1;7;43;34m%s\033[0m", expr->word);
             break;
         default:
             assert(0);
     }
 }
 
-/* Like a mapcar. */
 void display_list(sexpr *head) {
     sexpr *current = head;
     assert(head->type == CONS);
@@ -199,7 +201,7 @@ static void prepare_free_list(void) {
     next_free_cell = last_value;
 }
 
-static void insert_symbol(char *name) {
+static l_symbol insert_symbol(char *name) {
     sexpr *pair, *identifier, *word;
 
     assert(strlen(name) < NAME_LENGTH);
@@ -218,10 +220,12 @@ static void insert_symbol(char *name) {
     word = new_cell();
     word->type = WORD;
     strncpy(word->word, name, NAME_LENGTH);
-    
+
     pair = cons(identifier, word);
 
     name_list = cons(pair, name_list);
+
+    return identifier->symbol;
 }
 
 
@@ -264,8 +268,11 @@ static int mark_all_reachable_cells(void) {
         count++;
     } while (cell != NULL);
 
-    return count;
+#if GC_DEBUG
+    printf("Reached %d cells (%d total)\n", count, HEAP_SIZE);
+#endif
 
+    return count;
 }
 
 
@@ -273,7 +280,7 @@ static int garbage_collect(void) {
     int freed;
 
 #if GC_DEBUG
-    puts("Garbage collector called.");
+    puts("Garbage collecting...");
 #endif
 
     mark_all_reachable_cells();
@@ -328,5 +335,107 @@ sexpr *new_cell(void) {
     return cell;
 }
 
+static void parse_symbol(char *);
 
+/* TODO: Consider making a tokenizer... */
+result l_read(void) {
+    static int depth = 0;
+
+    result parse;
+    char c;
+
+    parse.status = OKAY;
+
+    /* Skip whitespace. */
+    do {
+        c = fgetc(stdin);
+    } while ((c != EOF) && isspace(c));
+
+    /* Ugh... this is soooo ugly. */
+
+    if (c == EOF) {
+        if (depth > 0) {
+            parse.status = HALT; // TODO: make better constant name for this
+            parse.expr = NULL;
+        }
+        return parse;
+    } else if (c == '(') {
+        result inner;
+        sexpr *last, *current;
+
+        depth++;
+
+        inner = l_read();
+
+        if (inner.status != OKAY) {
+            return inner;
+        }
+
+        /* parse.expr is the head of the list. */
+        parse.expr = last = new_cell();
+
+        /* Build up the list in order. */
+        while ((inner.status == OKAY) && (inner.expr != NULL)) {
+            current = new_cell();
+            current->car = inner.expr;
+
+            last->cdr = current;
+            last = current;
+
+            inner = l_read();
+        }
+
+        if (inner.status != OKAY) {
+            return inner;
+        }
+
+        last->cdr = NULL;
+        depth--;
+
+    } else if (c == ')') {
+        parse.expr = NULL;
+        parse.status = OKAY;
+
+        return parse;
+    } else if (isdigit(c)) {
+        ungetc(c, stdin);
+        
+        parse.expr = new_cell();
+        parse.expr->type = NUMBER;
+        
+        scanf("%lf", &parse.expr->number);
+
+        return parse;
+    } else {
+        /* It's literally anything else, make it a symbol. */
+        char buffer[NAME_LENGTH];
+        parse_symbol(buffer);
+
+        parse.expr = new_cell();
+        parse.expr->type = SYMBOL;
+
+        parse.expr->symbol = insert_symbol(buffer);
+    }
+
+    return parse;
+}
+
+static void parse_symbol(char *buffer) {
+    char c;
+    int i;
+
+    for (i = 0; i < NAME_LENGTH - 1; i++) {
+        c = fgetc(stdin);
+
+        if ((c == EOF) || isdigit(c) || isspace(c) || (c == ')')) {
+            break;
+        }
+        buffer[i] = c;
+    }
+
+    buffer[i] = '\0';
+
+    /* I realize... that I need some more elaborate states... */
+    while (!((c == EOF) || isspace(c) || isdigit(c) || (c == ')')));
+}
 
