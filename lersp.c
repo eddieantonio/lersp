@@ -335,107 +335,143 @@ sexpr *new_cell(void) {
     return cell;
 }
 
-static void parse_symbol(char *);
+enum token {
+    NONE,
+    LBRACKET, RBRACKET,
+    T_SYMBOL,
+    T_NUMBER,
+    /* String? */
+};
 
-/* TODO: Consider making a tokenizer... */
-result l_read(void) {
-    static int depth = 0;
+union token_data {
+    char name[NAME_LENGTH];
+    l_number number;
+};
 
-    result parse;
+static enum token next_token(union token_data *state) {
     char c;
 
-    parse.status = OKAY;
+    while ((c = fgetc(stdin)) != EOF) {
+        if (isspace(c))
+            continue;
 
-    /* Skip whitespace. */
-    do {
-        c = fgetc(stdin);
-    } while ((c != EOF) && isspace(c));
-
-    /* Ugh... this is soooo ugly. */
-
-    if (c == EOF) {
-        if (depth > 0) {
-            parse.status = HALT; // TODO: make better constant name for this
-            parse.expr = NULL;
-        }
-        return parse;
-    } else if (c == '(') {
-        result inner;
-        sexpr *last, *current;
-
-        depth++;
-
-        inner = l_read();
-
-        if (inner.status != OKAY) {
-            return inner;
+        /* Parse out comments. */
+        if (c == ';') {
+            do {
+                c = fgetc(stdin);
+            } while ((c != '\n') && (c != EOF));
+            continue;
         }
 
-        /* parse.expr is the head of the list. */
-        parse.expr = last = new_cell();
-
-        /* Build up the list in order. */
-        while ((inner.status == OKAY) && (inner.expr != NULL)) {
-            current = new_cell();
-            current->car = inner.expr;
-
-            last->cdr = current;
-            last = current;
-
-            inner = l_read();
+        if (c == '(') {
+            return LBRACKET;
         }
 
-        if (inner.status != OKAY) {
-            return inner;
+        if (c == ')') {
+            return RBRACKET;
         }
 
-        last->cdr = NULL;
-        depth--;
+        /* The following two rely on the read characters to be back on the
+         * stream. */
 
-    } else if (c == ')') {
-        parse.expr = NULL;
-        parse.status = OKAY;
-
-        return parse;
-    } else if (isdigit(c)) {
         ungetc(c, stdin);
-        
-        parse.expr = new_cell();
-        parse.expr->type = NUMBER;
-        
-        scanf("%lf", &parse.expr->number);
+        if (isdigit(c)) {
+            scanf("%lf", &state->number);
+            return T_NUMBER;
+        }
 
-        return parse;
-    } else {
-        /* It's literally anything else, make it a symbol. */
-        char buffer[NAME_LENGTH];
-        parse_symbol(buffer);
-
-        parse.expr = new_cell();
-        parse.expr->type = SYMBOL;
-
-        parse.expr->symbol = insert_symbol(buffer);
+        /* If we got here, it's a symbol. */
+        scanf("%7s", state->name);
+        return T_SYMBOL;
     }
 
+    return NONE;
+}
+
+static result parse_list(void);
+
+result l_read(void) {
+    result parse;
+
+    enum token token;
+    union token_data token_data;
+
+    sexpr *expr;
+
+    parse.expr = NULL;
+    parse.status = OKAY;
+
+    token = next_token(&token_data);
+
+    switch (token) {
+        case T_NUMBER:
+            expr = new_cell();
+            expr->type = NUMBER;
+            expr->number = token_data.number;
+            break;
+
+        case T_SYMBOL:
+            expr = new_cell();
+            expr->type = SYMBOL;
+            expr->symbol = insert_symbol(token_data.name);
+            break;
+
+        case LBRACKET:
+            return parse_list();
+
+        case RBRACKET:
+            expr = NULL;
+            parse.status = OKAY;
+            break;
+
+        case NONE:
+            expr = NULL;
+            parse.status = HALT;
+            /* Worst. Error message. Ever. */
+            fprintf(stderr, "Syntax error.\n");
+            break;
+
+    }
+
+    parse.expr = expr;
     return parse;
 }
 
-static void parse_symbol(char *buffer) {
-    char c;
-    int i;
+/* Parses the inside of a list. */
+static result parse_list(void) {
+    result inner, parse;
+    sexpr *head, *last, *current;
 
-    for (i = 0; i < NAME_LENGTH - 1; i++) {
-        c = fgetc(stdin);
+    inner = l_read();
 
-        if ((c == EOF) || isdigit(c) || isspace(c) || (c == ')')) {
-            break;
-        }
-        buffer[i] = c;
+    if ((inner.status != OKAY) || (inner.expr == NULL)) {
+        return inner;
     }
 
-    buffer[i] = '\0';
+    last = head = new_cell();
+    head->car = inner.expr;
 
-    /* I realize... that I need some more elaborate states... */
-    while (!((c == EOF) || isspace(c) || isdigit(c) || (c == ')')));
+    inner = l_read();
+    /* Build up the list in order. */
+    while ((inner.status == OKAY) && (inner.expr != NULL)) {
+        current = new_cell();
+        current->type = CONS;
+        current->car = inner.expr;
+
+        last->cdr = current;
+        last = current;
+
+        inner = l_read();
+    }
+
+    if (inner.status != OKAY) {
+        return inner;
+    }
+
+    last->cdr = NULL;
+
+    parse.status = OKAY;
+    parse.expr = head;
+    return parse;
 }
 
