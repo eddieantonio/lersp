@@ -41,6 +41,8 @@ int main(int argc, char *argv[]) {
         repl();
     }
 
+    print(name_list);
+
     /* TODO: I guess, interpret a file or something. */
 
     return 0;
@@ -52,15 +54,14 @@ void repl(void) {
     result input;
     result evaluation;
 
-    /* Development stuff. */
-    printf("; sizeof sexpr: %ld\n", sizeof(sexpr));
-
-
     while (1) {
         printf("#=> ");
         input = l_read();
 
-        if (input.status != OKAY) {
+        if (input.status == HALT) {
+            return;
+        } else if (input.status != OKAY) {
+            fprintf(stderr, "Syntax error.\n");
             break;
         }
 
@@ -335,6 +336,8 @@ sexpr *new_cell(void) {
     return cell;
 }
 
+
+
 enum token {
     NONE,
     LBRACKET, RBRACKET,
@@ -348,8 +351,11 @@ union token_data {
     l_number number;
 };
 
+/* Reads characters to make a symbol; any extra characters are truncated. */
+static void tokenize_symbol(char *);
+
 static enum token next_token(union token_data *state) {
-    char c;
+    int c;
 
     while ((c = fgetc(stdin)) != EOF) {
         if (isspace(c))
@@ -381,11 +387,40 @@ static enum token next_token(union token_data *state) {
         }
 
         /* If we got here, it's a symbol. */
-        scanf("%7s", state->name);
+        tokenize_symbol(state->name);
         return T_SYMBOL;
     }
 
     return NONE;
+}
+
+static bool is_symbol_char(char c) {
+    return !((c == EOF) || isspace(c) || (c == '(') || (c == ')'));
+}
+
+static void tokenize_symbol(char *buffer) {
+    int i, c;
+
+    for (i = 0; i < NAME_LENGTH - 1; i++) {
+        c = fgetc(stdin);
+
+        if (!is_symbol_char(c)) {
+            /* Finalize the buffer. */
+            ungetc(c, stdin);
+            buffer[i] = '\0';
+            return;
+        }
+
+        buffer[i] = c;
+    }
+
+    /* Finalize the buffer. */
+    buffer[i] = '\0';
+
+    while (is_symbol_char(c))
+        /* loop until non-symbol character. */;
+
+    ungetc(c, stdin);
 }
 
 static result parse_list(void);
@@ -427,15 +462,14 @@ result l_read(void) {
         case NONE:
             expr = NULL;
             parse.status = HALT;
-            /* Worst. Error message. Ever. */
-            fprintf(stderr, "Syntax error.\n");
             break;
-
     }
 
     parse.expr = expr;
     return parse;
 }
+
+
 
 /* Parses the inside of a list. */
 static result parse_list(void) {
