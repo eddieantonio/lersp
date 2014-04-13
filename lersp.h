@@ -1,10 +1,7 @@
 #include <stdbool.h>
 
-#define OKAY 0
-#define HALT 1
-
 #define HEAP_SIZE   2048
-#define MAX_NAMES   256
+#define MAX_NAMES   128
 #define NAME_LENGTH 8
 
 /* Define built-in symbols. */
@@ -35,12 +32,19 @@
 #define MAP     24
 #define REDUCE  25
 
+/* setjmp exception return values. */
+#define NOT_PARSED      0 // Initial setjmp.
+#define NOT_EVALUATED   0 // Initial setjmp.
+#define SYNTAX_ERROR    1
+#define END_INPUT       2
+#define EVAL_ERROR      2
+
 
 typedef unsigned int    l_symbol;
 typedef double          l_number;
 
 enum sexpr_type {
-    NUMBER, SYMBOL, FUNCTION, CONS, WORD /* a real string data type? */
+    CONS, NUMBER, SYMBOL, FUNCTION, BUILT_IN_FUNCTION,  WORD /* a real string data type? */
 };
 
 
@@ -70,17 +74,10 @@ typedef struct s_expression {
 } sexpr;
 
 /**
- * Generic tuple.
- */
-typedef struct {
-    int status;
-    sexpr *expr;
-} result; // TODO better name for this...
-
-/**
  * Reads an s-expression from stdin.
+ * Calls longjpm
  */
-result l_read(void);
+sexpr *l_read(void);
 
 /**
  * { read -> eval -> print } loop
@@ -90,13 +87,13 @@ void repl(void);
 /**
  * Evaluates an s-expression.
  */
-result eval(sexpr *expr, sexpr **environment);
+sexpr* eval(sexpr *expr, sexpr **environment);
 
 /**
  * Finds the associated expression in the given environment.
  * d
  */
-result assoc(l_symbol symbol, sexpr *environment);
+sexpr* assoc(l_symbol symbol, sexpr *environment);
 
 /**
  * Print an s-expression on stdout.
@@ -127,7 +124,7 @@ char *lookup(l_symbol symbol);
 sexpr *new_cell(void);
 
 /**
- * 
+ * Creates a new cons cell that pairs the given expressions.
  */
 sexpr *cons(sexpr*, sexpr*);
 

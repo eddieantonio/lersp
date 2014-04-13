@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <ctype.h>
+#include <setjmp.h> // Oh... Oh nooooooo.
+
 
 #include "lersp.h"
 
@@ -28,6 +30,9 @@ static sexpr *global = NULL; // execution context?
 static sexpr *name_list = NULL;
 /* Amount of symbos left to use. */
 static int next_symbol_id = 0;
+
+/* setjmp read/eval exception buffer. */
+sigjmp_buf top_level_exception;
 
 
 /*
@@ -51,37 +56,60 @@ int main(int argc, char *argv[]) {
 
 
 void repl(void) {
-    result input;
-    result evaluation;
+    int parse_status;
+    int eval_status;
+    sexpr *input;
+    sexpr *evaluation;
 
     while (1) {
         printf("#=> ");
-        input = l_read();
 
-        if (input.status == HALT) {
-            return;
-        } else if (input.status != OKAY) {
+        parse_status = setjmp(top_level_exception);
+        if (parse_status == NOT_PARSED) {
+            input = l_read();
+        } else if (parse_status == END_INPUT) {
+            break;
+        } else if (parse_status == SYNTAX_ERROR) {
+            /* Most useful error message ever. */
             fprintf(stderr, "Syntax error.\n");
-            break;
-        }
+            continue;
+        } 
 
-        evaluation = eval(input.expr, &global);
-
-        if (evaluation.status == OKAY) {
-            print(evaluation.expr);
+        eval_status = setjmp(top_level_exception);
+        if (eval_status == NOT_EVALUATED) {
+            evaluation = eval(input, &global);
+            print(evaluation);
         } else {
-            break;
+            /* Wow. There is not way to be anymore vague. */
+            fprintf(stderr, "Evaluation error.\n");
         }
     }
 
 }
 
-void display_list(sexpr*);
+
 
-void print(sexpr *expr) {
-    printf(";=> ");
-    display(expr);
-    puts("");
+void display_list(sexpr *head) {
+    sexpr *current = head;
+    assert(head->type == CONS);
+
+    printf("(");
+    do {
+        display(current->car);
+        if (current->cdr != NULL) {
+            printf(" ");
+        }
+
+        current = current->cdr;
+    } while ((current != NULL) && (current->type == CONS));
+
+    if (current != NULL) {
+        /* This must be the end of an improper list. */
+        printf(". ");
+        display(current);
+    }
+
+    printf(")");
 }
 
 void display(sexpr* expr) {
@@ -115,27 +143,12 @@ void display(sexpr* expr) {
     }
 }
 
-void display_list(sexpr *head) {
-    sexpr *current = head;
-    assert(head->type == CONS);
 
-    printf("(");
-    do {
-        display(current->car);
-        if (current->cdr != NULL) {
-            printf(" ");
-        }
 
-        current = current->cdr;
-    } while ((current != NULL) && (current->type == CONS));
-
-    if (current != NULL) {
-        /* This must be the end of an improper list. */
-        printf(". ");
-        display(current);
-    }
-
-    printf(")");
+void print(sexpr *expr) {
+    printf(";=> ");
+    display(expr);
+    puts("");
 }
 
 char *lookup(l_symbol symbol) {
@@ -206,7 +219,7 @@ static l_symbol find_symbol_by_name(char *name) {
         pair = current->car;
 
         if (strcmp(name, pair->cdr->word) == 0) {
-            return pair->car->symbol;           
+            return pair->car->symbol;
         }
 
         current = current->cdr;
@@ -248,7 +261,9 @@ static l_symbol insert_symbol(char *name) {
 }
 
 
-/* It's important to keep this table in sync with the definitions in the
+/* TODO: Make this less gross.
+ *
+ * It's important to keep this table in sync with the definitions in the
  * header file! */
 static char* INITIAL_SYMBOLS[] = {
     "COND", "DEFINE", "LABEL", "LAMBDA", "QUOTE",
@@ -281,18 +296,26 @@ static void prepare_execution_context(void) {
 }
 
 
+static int mark_cells(sexpr *cell) {
+    if (cell == NULL) {
+        return 0;
+    }
 
+    cell->reached = true;
+
+    if (cell->type == CONS) {
+        return mark_cells(cell->car) + mark_cells(cell->cdr);
+    } else {
+        return 1;
+    }
+}
+
+/* TODO: Rewrite this! */
 static int mark_all_reachable_cells(void) {
-    int count = 0;
-    sexpr *cell = global;
-
+    int count;
     assert(global != NULL);
 
-    do {
-        cell->reached = true;
-        cell = cell->cdr;
-        count++;
-    } while (cell != NULL);
+    count = mark_cells(global);
 
 #if GC_DEBUG
     printf("Reached %d cells (%d total)\n", count, HEAP_SIZE);
@@ -345,6 +368,8 @@ sexpr *cons(sexpr* car, sexpr* cdr) {
 
 
 sexpr *new_cell(void) {
+    static unsigned int calls_to_new = 0;
+
     sexpr* cell = next_free_cell;
 
     if (cell == NULL) {
@@ -355,6 +380,8 @@ sexpr *new_cell(void) {
             exit(-1);
         }
     }
+
+    printf("Cell %u: %p -> %p\n", calls_to_new++, cell, cell->cdr);
 
     next_free_cell = cell->cdr;
 
@@ -391,6 +418,8 @@ static enum token next_token(union token_data *state) {
             do {
                 c = fgetc(stdin);
             } while ((c != '\n') && (c != EOF));
+            ungetc(c, stdin);
+
             continue;
         }
 
@@ -436,30 +465,34 @@ static void tokenize_symbol(char *buffer) {
             return;
         }
 
+        /* Normalize to uppercase. */
+        if (isalpha(c)) {
+            c &= 0x5f;
+        }
+
         buffer[i] = c;
     }
 
     /* Finalize the buffer. */
     buffer[i] = '\0';
 
-    while (is_symbol_char(c))
+    do {
         /* loop until non-symbol character. */;
+        c = fgetc(stdin);
+    } while (is_symbol_char(c));
 
     ungetc(c, stdin);
 }
 
-static result parse_list(void);
+static sexpr* parse_list(void);
 
-result l_read(void) {
-    result parse;
+sexpr* l_read(void) {
+    static int depth = 0;
+
+    sexpr *expr = NULL;
 
     enum token token;
     union token_data token_data;
-
-    sexpr *expr;
-
-    parse.expr = NULL;
-    parse.status = OKAY;
 
     token = next_token(&token_data);
 
@@ -477,46 +510,51 @@ result l_read(void) {
             break;
 
         case LBRACKET:
+            depth++;
             return parse_list();
 
         case RBRACKET:
+            if (depth < 1) {
+                longjmp(top_level_exception, SYNTAX_ERROR);
+            }
+            depth--;
             expr = NULL;
-            parse.status = OKAY;
             break;
 
         case NONE:
+            longjmp(top_level_exception, END_INPUT);
             expr = NULL;
-            parse.status = HALT;
+            /* Apparently this is a syntax error? */
             break;
     }
 
-    parse.expr = expr;
-    return parse;
+    return expr;
 }
 
 
-
 /* Parses the inside of a list. */
-static result parse_list(void) {
-    result inner, parse;
-    sexpr *head, *last, *current;
+static sexpr* parse_list(void) {
+    sexpr *head, *last, *current, *inner;
 
+    /* Read the first s-expr. */
     inner = l_read();
 
-    if ((inner.status != OKAY) || (inner.expr == NULL)) {
+    /* Don't bother allocating anything if it's NULL (such as if an RBRACKET
+     * was returned. */
+    if (inner == NULL) {
         return inner;
     }
 
     last = head = new_cell();
     head->type = CONS;
-    head->car = inner.expr;
+    head->car = inner;
 
     inner = l_read();
     /* Build up the list in order. */
-    while ((inner.status == OKAY) && (inner.expr != NULL)) {
+    while (inner != NULL) {
         current = new_cell();
         current->type = CONS;
-        current->car = inner.expr;
+        current->car = inner;
 
         last->cdr = current;
         last = current;
@@ -524,23 +562,22 @@ static result parse_list(void) {
         inner = l_read();
     }
 
-    if (inner.status != OKAY) {
-        return inner;
-    }
-
     last->cdr = NULL;
 
-    parse.status = OKAY;
-    parse.expr = head;
-    return parse;
+    return head;
 }
 
 
 
-static result eval_form(l_symbol symbol, sexpr *args, sexpr **env);
+static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr **env);
+static sexpr* update_environment(sexpr **env, sexpr* symbol, sexpr *value);
 
-result eval(sexpr *expr, sexpr **env) {
-    result evaluation;
+sexpr* eval(sexpr *expr, sexpr **env) {
+    sexpr* evaluation;
+
+    if (expr == NULL) {
+        return expr;
+    }
 
     if (expr->type == SYMBOL) {
         return assoc(expr->symbol, *env);
@@ -548,28 +585,23 @@ result eval(sexpr *expr, sexpr **env) {
         /* Try to evaluate a special form: */
         return eval_form(expr->car->symbol, expr->cdr, env);
     }
-    /* TODO: evlist. */
+    /* TODO: evlist, and, in fact, everything else. */
 
     /* Otherwise, it just evaluates to itself. */
-    evaluation.expr = expr;
-    evaluation.status = OKAY;
-
-    return evaluation;
+    return expr;
 }
 
-static sexpr* update_environment(sexpr **env, sexpr* symbol, sexpr *value);
 
-static result eval_form(l_symbol symbol, sexpr *args, sexpr **env) {
-    result evaluation;
-    evaluation.expr = NULL;
-    evaluation.status = OKAY;
+/* Evaluates a cons cell. */
+static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr **env) {
+    sexpr *evaluation;
 
     /*
      * Evaluate all special forms and built-in functions.
      */
     switch (symbol) {
         case QUOTE:
-            evaluation.expr = args;
+            evaluation = args->car;
             break;
         case LAMBDA:
             /* Make a lambda... */
@@ -579,28 +611,33 @@ static result eval_form(l_symbol symbol, sexpr *args, sexpr **env) {
             if ((args == NULL)
                     || (args->car == NULL)
                     || (args->cdr == NULL)
+                    || (args->cdr->type != CONS)
                     || (args->car->type != SYMBOL)) {
-
-                fprintf(stderr, "Invalid LABEL\n");
-                evaluation.status = HALT;
-                return evaluation;
+                fprintf(stderr, "Invalid LABEL statement\n");
+                longjmp(top_level_exception, EVAL_ERROR);
+                return NULL;
             }
 
-            evaluation.expr = eval(args->cdr, env).expr;
-            update_environment(env, args->car, evaluation.expr);
+            evaluation = eval(args->cdr->car, env);
+            update_environment(env, args->car, evaluation);
 
             break;
         case S_CONS:
-            evaluation.expr = cons(
-                    eval(args->car, env).expr,
-                    eval(args->cdr, env).expr);
-            return evaluation;
+            /* TODO: some sort of evaluation for stuff. */
+            return cons(
+                    eval(args->car, env),
+                    eval(args->cdr, env));
+            
         case COND:
             //return evcond(args, env);
         default:
-            evaluation.status = HALT;
-            evaluation.expr = NULL;
-            fprintf(stderr, "eval not defined.\n");
+            /* By the way, this makes no sense: */
+            fprintf(stderr, "eval not defined for ");
+            fflush(stderr);
+            lookup(symbol);
+            fprintf(stderr, "\n");
+            longjmp(top_level_exception, EVAL_ERROR);
+            return NULL;
     }
 
     return evaluation;
@@ -625,41 +662,38 @@ static sexpr* update_environment(sexpr **env, sexpr* symbol, sexpr *value) {
     return *env;
 }
 
-static result evcon(sexpr *expr, sexpr *environment) {
-    result evaluation;
+static sexpr* evcon(sexpr *expr, sexpr *environment) {
+    sexpr* evaluation;
 
     /* TODO */
-    evaluation.status = OKAY;
-    evaluation.expr = expr;
-
     return evaluation;
 }
 
-/* This isn't quite programmed correctly... */
-result assoc(l_symbol symbol, sexpr *environment) {
-    sexpr *current, *pair;
-    result binding;
 
-    binding.status = HALT;
-    binding.expr = NULL;
+/* Returns the first expression that is associated with the symbol in the
+ * given environment. */
+sexpr* assoc(l_symbol symbol, sexpr *environment) {
+    sexpr *current, *pair;
 
     if (environment == NULL) {
         environment = global;
     }
 
+    /* Find the first symbol. */
     while (current != NULL) {
         pair = current->car;
 
         if (pair->car->symbol == symbol) {
-            /* Symbol is found! */
-            binding.expr = pair->cdr;
-            binding.status = OKAY;
-            return binding;
+            /* Symbol was found! */
+            return pair->cdr;
         }
 
         current = current->cdr;
     }
 
-    return binding;
+    fprintf(stderr, "Undefined symbol: %s\n", lookup(symbol)); 
+    longjmp(top_level_exception, EVAL_ERROR);
+
+    return NULL;
 }
 
