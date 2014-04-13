@@ -1,6 +1,6 @@
 #include <stdbool.h>
 
-#define HEAP_SIZE   128 // TODO: set this to 2048.
+#define HEAP_SIZE   2048
 #define MAX_NAMES   128
 #define NAME_LENGTH 8
 

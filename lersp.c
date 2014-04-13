@@ -50,7 +50,9 @@ int main(int argc, char *argv[]) {
         repl();
     }
 
+#if VERBOSE_DEBUG
     print(name_list);
+#endif
 
     /* TODO: I guess, interpret a file or something. */
 
@@ -133,7 +135,10 @@ void display(sexpr* expr) {
 
         case FUNCTION:
             /* A function is just a cons-cell. */
-            /* FALL THROUGH! */
+            printf("#<LAMBDA ");
+            display(expr->car);
+            printf(">");
+            break;
         case CONS:
             display_list(expr);
             break;
@@ -441,7 +446,9 @@ sexpr *new_cell(void) {
         }
     }
 
+#if VERBOSE_DEBUG
     printf("Cell %u: %p -> %p\n", calls_to_new++, cell, cell->cdr);
+#endif
 
     next_free_cell = cell->cdr;
 
@@ -738,19 +745,22 @@ sexpr* eval(sexpr *expr, sexpr *env) {
 }
 
 static sexpr* call_builtin(l_builtin func, sexpr *args);
-static sexpr* apply_lambda(sexpr *func, sexpr *args, sexpr *env);
+static sexpr* apply_lambda(sexpr *func, sexpr *args);
 
+/* TODO: Uh... do I even need env? */
 sexpr *apply(sexpr *func, sexpr *args, sexpr *env) {
+#if VERBOSE_DEBUG
     printf("Applying: ");
     display(func);
     puts("");
+#endif
 
     if (func == NULL) {
         raise_eval_error("Cannot apply NIL");
     }
 
     if (func->type == FUNCTION) {
-        raise_eval_error("Calling lambdas not implemented.");
+        return apply_lambda(func, args);
     } else if (func->type == BUILT_IN_FUNCTION) {
         return call_builtin(func->func, args);
     }
@@ -836,9 +846,11 @@ sexpr *eval_list(sexpr *args, sexpr *env) {
         current = current->cdr;
     }
 
+#if VERBOSE_DEBUG
     printf("Evaluated list: ");
     display(head);
     puts("");
+#endif
 
     return head;
 
@@ -869,21 +881,71 @@ sexpr *call_builtin(l_builtin func, sexpr *args) {
     return func(argc, argv);
 }
 
+/* Returns a new environment where old environment is augmented with the
+ * values. */
+sexpr *bind_args(sexpr *free_vars, sexpr* values, sexpr *old_env) {
+    sexpr *symbol_pair, *value_pair, *env;
+
+    env = old_env;
+    symbol_pair = free_vars;
+    value_pair = values;
+
+    while (symbol_pair != NULL) {
+        if (value_pair == NULL) {
+            raise_eval_error("Not enough arguments for function.");
+        }
+
+        update_environment(&env, car(symbol_pair), car(value_pair));
+
+        value_pair = cdr(value_pair);
+        symbol_pair = cdr(symbol_pair);
+    }
+
+    if (symbol_pair != NULL) {
+        fprintf(stderr, "Warning: Too many aruguments for function.");
+    }
+
+    return env;
+}
+
+sexpr *apply_lambda(sexpr *lambda, sexpr *args) {
+    assert((lambda != NULL) && (lambda->type == FUNCTION));
+
+    sexpr *body = lambda->car;
+    sexpr *free_vars = lambda->cdr->car;
+    sexpr *env = bind_args(free_vars, args, lambda->cdr->cdr);
+
+#if VERBOSE_DEBUG
+    printf("Calling enviroment for func is: ");
+    display(env);
+    puts("");
+#endif
+
+    /* 0-arity function. Apply with existing environment. */
+    return eval(body, env);
+
+}
+
+
 sexpr *update_environment(sexpr **env, sexpr* symbol, sexpr *value) {
     sexpr *binding = new_cell();
     binding->type = CONS;
     binding->car = symbol;
     binding->cdr = value;
 
+#if VERBOSE_DEBUG
     printf("Updating enviroment: ");
     display(*env);
     puts("");
+#endif
 
     *env = cons(binding, *env);
 
+#if VERBOSE_DEBUG
     printf("Environment is now: ");
     display(*env);
     puts("");
+#endif
 
     return *env;
 }
@@ -893,6 +955,17 @@ static sexpr* evcon(sexpr *expr, sexpr *environment) {
     return NULL;
 }
 
+/**
+ * Lambdas are actually just cons cells.
+ *
+ * (body . (formal-arguments . lexical-environment))
+ *
+ * For example, the inner lambda in this expression:
+ *      (lambda (a b) (lambda (m) (m a b)))
+ *
+ * Is:
+ *      ((m a b) . ((m) . ((a . BOUND-A) (b . BOUND-B) . ENV)))
+ */
 static sexpr* create_lambda(sexpr *formal_args, sexpr *body, sexpr *env) {
     sexpr *lambda = cons(body, cons(formal_args, env));
     lambda->type = FUNCTION;
