@@ -81,7 +81,7 @@ void repl(void) {
 
         eval_status = setjmp(top_level_exception);
         if (eval_status == NOT_EVALUATED) {
-            evaluation = eval(input, &global);
+            evaluation = eval(input, global);
             print(evaluation);
         } else {
             /* Wow. There is no way to be any more vague. */
@@ -693,7 +693,7 @@ bool c_eq(sexpr *a, sexpr *b) {
             case SYMBOL:
                 return a->symbol == b->symbol;
             case LAMBDA:
-                return a->car == b->car;
+                return a == b;
             default:
                 return false;
         }
@@ -712,29 +712,54 @@ sexpr *eq(sexpr *a, sexpr *b) {
 
 
 static sexpr* eval_atom(sexpr *atom, sexpr *env);
-static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr **env);
+static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr *env);
 static sexpr* create_lambda(sexpr *formal_args, sexpr *body, sexpr *env);
+/* Equivilent to (map eval args). */
+static sexpr* eval_list(sexpr *args, sexpr *env);
 
-sexpr* eval(sexpr *expr, sexpr **env) {
+sexpr* eval(sexpr *expr, sexpr *env) {
     sexpr* evaluation;
 
     if (env == NULL) {
-        env = &global;
+        env = global;
     }
 
     if (c_atom(expr)) {
-        return eval_atom(expr, *env);
+        return eval_atom(expr, env);
     }
 
     if (expr->car->type == SYMBOL) {
         /* Try to evaluate a special form. */
         return eval_form(expr->car->symbol, expr->cdr, env);
+    } else {
+        return apply(eval(car(expr), env), cdr(expr), env);
     }
 
-    raise_eval_error("function application not implemented");
-    return NULL;
-
 }
+
+static sexpr* call_builtin(l_builtin func, sexpr *args);
+static sexpr* apply_lambda(sexpr *func, sexpr *args, sexpr *env);
+
+sexpr *apply(sexpr *func, sexpr *args, sexpr *env) {
+    printf("Applying: ");
+    display(func);
+    puts("");
+
+    if (func == NULL) {
+        raise_eval_error("Cannot apply NIL");
+    }
+
+    if (func->type == FUNCTION) {
+        raise_eval_error("Calling lambdas not implemented.");
+    } else if (func->type == BUILT_IN_FUNCTION) {
+        return call_builtin(func->func, args);
+    }
+
+    raise_eval_error("First argument to apply is not callable");
+    return NULL;
+}
+
+
 
 static sexpr *eval_atom(sexpr *expr, sexpr *env) {
     if (expr == NULL) {
@@ -751,7 +776,7 @@ static sexpr *eval_atom(sexpr *expr, sexpr *env) {
 
 
 /* Evaluates a cons cell. */
-static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr **env) {
+static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr *env) {
     sexpr *evaluation;
 
     /*
@@ -770,12 +795,12 @@ static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr **env) {
 
         case LABEL:
             evaluation = eval(car(cdr(args)), env);
-            update_environment(env, car(args), evaluation);
+            update_environment(&global, car(args), evaluation);
 
             break;
 
         case LAMBDA:
-            evaluation = create_lambda(car(args), car(cdr(args)), *env);
+            evaluation = create_lambda(car(args), car(cdr(args)), env);
             break;
 
         case QUOTE:
@@ -783,19 +808,68 @@ static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr **env) {
             break;
 
         default:
-            /* By the way, this makes no sense: */
-            fprintf(stderr, "eval not defined for ");
-            fflush(stderr);
-            lookup(symbol);
-            fprintf(stderr, "\n");
-            longjmp(top_level_exception, EVAL_ERROR);
-            return NULL;
+            /* Not a special form -- delegate to apply. */
+            return apply(assoc(symbol, env), eval_list(args, env), env);
     }
 
     return evaluation;
 }
 
-sexpr* update_environment(sexpr **env, sexpr* symbol, sexpr *value) {
+/*
+ * Evaluates all elements of the list.
+ * (map (lambda (x) (eval x env) args)).
+ */
+sexpr *eval_list(sexpr *args, sexpr *env) {
+    sexpr *head, *unevaluated, *current;
+
+    if (args == NULL) {
+        return NULL;
+    }
+
+    current = head = cons(eval(car(args), env), NULL);
+    unevaluated = cdr(args);
+
+    while (unevaluated != NULL) {
+        current->cdr = cons(eval(car(unevaluated), env), NULL);
+        /* Advance positions in both lists. */
+        unevaluated = unevaluated->cdr;
+        current = current->cdr;
+    }
+
+    printf("Evaluated list: ");
+    display(head);
+    puts("");
+
+    return head;
+
+}
+
+int slength(sexpr *list) {
+    if (list == NULL) {
+        return 0;
+    } else {
+        return 1 + slength(cdr(list));
+    }
+}
+
+sexpr *call_builtin(l_builtin func, sexpr *args) {
+    int i, argc = slength(args);
+    sexpr *argv[argc];
+    sexpr *current;
+
+    for (i = 0, current = args; i < argc; i++) {
+        argv[i] = car(current);
+        current = cdr(current);
+
+        printf("arg %d: ", i);
+        display(argv[i]);
+        puts("");
+    }
+
+    return func(argc, argv);
+}
+
+sexpr *update_environment(sexpr **env, sexpr* symbol, sexpr *value) {
     sexpr *binding = new_cell();
     binding->type = CONS;
     binding->car = symbol;
@@ -815,10 +889,8 @@ sexpr* update_environment(sexpr **env, sexpr* symbol, sexpr *value) {
 }
 
 static sexpr* evcon(sexpr *expr, sexpr *environment) {
-    sexpr* evaluation;
-
     /* TODO */
-    return evaluation;
+    return NULL;
 }
 
 static sexpr* create_lambda(sexpr *formal_args, sexpr *body, sexpr *env) {
@@ -827,6 +899,8 @@ static sexpr* create_lambda(sexpr *formal_args, sexpr *body, sexpr *env) {
 
     return lambda;
 }
+
+
 
 
 /* Returns the first expression that is associated with the symbol in the
@@ -884,14 +958,10 @@ sexpr *wrapped_eval(int n, sexpr *args[]) {
     if (n != 1) {
         raise_eval_error("eval takes exactly one argument.");
     }
-    return eval(args[0], &global);
+    return eval(args[0], global);
 }
 
 
-
-SIMPLE_WRAPPER_2(cons)
-SIMPLE_WRAPPER_1(car)
-SIMPLE_WRAPPER_1(cdr)
 
 struct builtin_func_def {
     l_symbol identifier;
@@ -901,15 +971,22 @@ struct builtin_func_def {
 
 #define VARIABLE_ARITY -1
 
+/* Make wrappers for all of these dang functions. */
+SIMPLE_WRAPPER_2(cons)
+SIMPLE_WRAPPER_1(car)
+SIMPLE_WRAPPER_1(cdr)
+
 static struct builtin_func_def BUILT_INS[] = {
     { EVAL, wrapped_eval, 2 },
     /*
     { APPLY, wrapped_apply, 2 },
-    { CONS, wrapped_cons, 2 },
+    */
 
+    { S_CONS, wrapped_cons, 2 },
     { CAR, wrapped_car, 1 },
     { CDR, wrapped_cdr, 1 },
 
+    /*
     { EQ, atom, 1 },
     { ATOM, null, 1 },
     { NOT, not, 1 },
@@ -917,8 +994,9 @@ static struct builtin_func_def BUILT_INS[] = {
     { AND, and, VARIABLE_ARITY },
     { OR, or, VARIABLE_ARITY },
     { PLUS, plus, VARIABLE_ARITY },
-    { TIMES, plus, VARIABLE_ARITY },
-    { TIMES, plus, VARIABLE_ARITY },
+    { SUB, sub, 2 },
+    { TIMES, times, VARIABLE_ARITY },
+    { DIV, div, VARIABLE_ARITY },
     */
 };
 

@@ -7,7 +7,7 @@
 /* Define built-in symbols. */
 #define COND    0
 #define DEFINE  1
-#define LABEL   2
+#define LABEL   2 // Deprecate.
 #define LAMBDA  3
 #define QUOTE   4
 #define EVAL    5
@@ -27,7 +27,7 @@
 #define MUL     19
 #define LT      20
 #define GT      21
-#define F       22
+#define F       22 // Deprecate
 #define T       23
 #define MAP     24
 #define REDUCE  25
@@ -96,12 +96,12 @@ void repl(void);
 /**
  * Evaluates an s-expression.
  */
-sexpr* eval(sexpr *expr, sexpr **environment);
+sexpr* eval(sexpr *expr, sexpr *environment);
 
 /**
  * Applies the function func to the given arguments.
  */
-sexpr* apply(sexpr *func, sexpr *args);
+sexpr* apply(sexpr *func, sexpr *args, sexpr *env);
 
 /**
  * Finds the associated expression in the given environment.
