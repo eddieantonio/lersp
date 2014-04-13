@@ -1,6 +1,6 @@
 #include <stdbool.h>
 
-#define HEAP_SIZE   2048
+#define HEAP_SIZE   128 // TODO: set this to 2048.
 #define MAX_NAMES   128
 #define NAME_LENGTH 8
 
@@ -47,16 +47,18 @@ enum sexpr_type {
     CONS, NUMBER, SYMBOL, FUNCTION, BUILT_IN_FUNCTION,  WORD /* a real string data type? */
 };
 
+typedef struct s_expression sexpr;
+typedef sexpr* (* l_builtin)(int, sexpr *[]);
 
 /*
  * S-expressions represent all possible values in Lersp.
- * 
+ *
  * Functions are just special cons-cells:
  *
  *  ( body . ( var-names . environment ) )
  *
  */
-typedef struct s_expression {
+struct s_expression {
     enum sexpr_type type;
     bool reached; // for garbage collection
     union {
@@ -70,8 +72,15 @@ typedef struct s_expression {
 
         // A very small 'string', for internal use (identifiers, environments).
         char word[NAME_LENGTH];
+
+        /* Builtin function. */
+        struct {
+            l_builtin func;
+            int arity;
+        };
     };
-} sexpr;
+};
+
 
 /**
  * Reads an s-expression from stdin.
@@ -90,10 +99,20 @@ void repl(void);
 sexpr* eval(sexpr *expr, sexpr **environment);
 
 /**
+ * Applies the function func to the given arguments.
+ */
+sexpr* apply(sexpr *func, sexpr *args);
+
+/**
  * Finds the associated expression in the given environment.
- * d
  */
 sexpr* assoc(l_symbol symbol, sexpr *environment);
+
+/**
+ * Associates symbol (must be an s-expression) with the given value,
+ * augmenting the environment.
+ */
+sexpr* update_environment(sexpr **env, sexpr *symbol, sexpr *value);
 
 /**
  * Print an s-expression on stdout.
