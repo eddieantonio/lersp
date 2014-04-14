@@ -32,7 +32,7 @@ static sexpr *global = NULL; // execution context?
 
 /* List of (identifier . name) pairs. */
 static sexpr *name_list = NULL;
-/* Amount of symbos left to use. */
+/* Amount of symbols left to use. */
 static int next_symbol_id = 0;
 
 /* setjmp read/eval exception buffer. */
@@ -329,9 +329,6 @@ static void prepare_execution_context(void) {
     /* This will also have the side-effect of setting up the global
      * environment for us. */
     insert_initial_environment();
-
-    /* This is the initial binding list. */
-    /* There's nothing in it... */
 }
 
 
@@ -642,7 +639,7 @@ static sexpr* parse_list(void) {
 #define raise_eval_error(msg) \
         fprintf(stderr, msg "\n"); \
         longjmp(top_level_exception, EVAL_ERROR); \
-        return NULL // Semicolon omited; should be provided in program text.
+        return NULL // Semicolon omitted; should be provided in program text.
 
 
 sexpr *cons(sexpr* car, sexpr* cdr) {
@@ -721,7 +718,7 @@ sexpr *eq(sexpr *a, sexpr *b) {
 static sexpr* eval_atom(sexpr *atom, sexpr *env);
 static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr *env);
 static sexpr* create_lambda(sexpr *formal_args, sexpr *body, sexpr *env);
-/* Equivilent to (map eval args). */
+/* Equivalent to (map eval args). */
 static sexpr* eval_list(sexpr *args, sexpr *env);
 
 sexpr* eval(sexpr *expr, sexpr *env) {
@@ -739,7 +736,7 @@ sexpr* eval(sexpr *expr, sexpr *env) {
         /* Try to evaluate a special form. */
         return eval_form(expr->car->symbol, expr->cdr, env);
     } else {
-        return apply(eval(car(expr), env), cdr(expr), env);
+        return apply(eval(car(expr), env), cdr(expr));
     }
 
 }
@@ -747,8 +744,7 @@ sexpr* eval(sexpr *expr, sexpr *env) {
 static sexpr* call_builtin(l_builtin func, sexpr *args);
 static sexpr* apply_lambda(sexpr *func, sexpr *args);
 
-/* TODO: Uh... do I even need env? */
-sexpr *apply(sexpr *func, sexpr *args, sexpr *env) {
+sexpr *apply(sexpr *func, sexpr *args) {
 #if VERBOSE_DEBUG
     printf("Applying: ");
     display(func);
@@ -819,7 +815,7 @@ static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr *env) {
 
         default:
             /* Not a special form -- delegate to apply. */
-            return apply(assoc(symbol, env), eval_list(args, env), env);
+            return apply(assoc(symbol, env), eval_list(args, env));
     }
 
     return evaluation;
@@ -873,9 +869,11 @@ sexpr *call_builtin(l_builtin func, sexpr *args) {
         argv[i] = car(current);
         current = cdr(current);
 
+#if VERBOSE_DEBUG
         printf("arg %d: ", i);
         display(argv[i]);
         puts("");
+#endif
     }
 
     return func(argc, argv);
@@ -974,8 +972,6 @@ static sexpr* create_lambda(sexpr *formal_args, sexpr *body, sexpr *env) {
 }
 
 
-
-
 /* Returns the first expression that is associated with the symbol in the
  * given environment. */
 sexpr* assoc(l_symbol symbol, sexpr *environment) {
@@ -1007,6 +1003,144 @@ sexpr* assoc(l_symbol symbol, sexpr *environment) {
 
 
 
+/* Wrapped built-ins. */
+
+sexpr *wrapped_eval(int n, sexpr *args[]) {
+    if (n != 1) {
+        raise_eval_error("eval takes exactly one argument.");
+    }
+    return eval(args[0], global);
+}
+
+sexpr* null(int n, sexpr *argv[]) {
+    if (n != 1) {
+        raise_eval_error("null takes exactly one argument.");
+    }
+    return to_lisp_boolean(argv[0] == NULL);
+}
+
+sexpr* not(int n, sexpr *argv[]) {
+    if (n != 1) {
+        raise_eval_error("null takes exactly one argument.");
+    }
+    sexpr *value = argv[0];
+    bool is_true = ((value != NULL) && (value->type == SYMBOL) && (value->symbol == T));
+    return to_lisp_boolean(!is_true);
+}
+
+sexpr* new_number(l_number num) {
+    sexpr* result;
+    result = new_cell();
+    result->type = NUMBER;
+    result->number = num;
+    return result;
+}
+
+sexpr* plus(int argc, sexpr *argv[]) {
+    int i;
+    l_number total = 0;
+    sexpr *value;
+
+    for (i = 0; i < argc; i++) {
+        value = argv[i];
+
+        if ((value == NULL) || (value->type != NUMBER)) {
+            raise_eval_error("+ given non-numeric arguments.");
+        }
+        total += argv[i]->number;
+    }
+
+    return new_number(total);
+}
+
+sexpr* mul(int argc, sexpr *argv[]) {
+    int i;
+    l_number product = 1;
+    sexpr *value;
+
+    for (i = 0; i < argc; i++) {
+        value = argv[i];
+
+        if ((value == NULL) || (value->type != NUMBER)) {
+            raise_eval_error("* given non-numeric arguments.");
+        }
+        product *= argv[i]->number;
+    }
+
+    return new_number(product);
+}
+
+sexpr *neg(sexpr *arg) {
+    return new_number(-arg->number);
+}
+
+sexpr *var_sub(int argc, sexpr *argv[]) {
+    int i;
+    assert((argc > 1) && (argv[0] != NULL) && (argv[0]->type == NUMBER));
+
+    /* We can assume that argv[0] is a number. */
+    l_number total = argv[0]->number;
+    sexpr *value;
+
+    for (i = 1; i < argc; i++) {
+        value = argv[i];
+
+        if ((value == NULL) || (value->type != NUMBER)) {
+            raise_eval_error("* given non-numeric arguments.");
+        }
+
+        total -= argv[i]->number;
+    }
+
+    return new_number(total);
+}
+
+sexpr *sub(int argc, sexpr *argv[]) {
+    if ((argc < 1) || (argv[0] == NULL) || (argv[0]->type != NUMBER)) {
+        raise_eval_error("- takes at least 1 numeric argument.");
+    }
+
+    if (argc == 1) {
+        return neg(argv[0]);
+    } else {
+        return var_sub(argc, argv);
+    }
+
+    return new_number(argv[0]->number - argv[1]->number);
+}
+
+sexpr *var_div(int argc, sexpr *argv[]) {
+    int i;
+    l_number divisor, result = 1;
+    sexpr *value;
+
+    for (i = 0; i < argc; i++) {
+        value = argv[i];
+
+        if ((value == NULL) || (value->type != NUMBER)) {
+            raise_eval_error("* given non-numeric arguments.");
+        }
+        divisor = argv[i]->number;
+
+        if (divisor == 0) {
+            raise_eval_error("divide by zero.");
+        }
+
+        result /= divisor;
+    }
+
+    return new_number(result);
+}
+
+
+
+struct builtin_func_def {
+    l_symbol identifier;
+    l_builtin func;
+    int arity;
+};
+
+#define VARIABLE_ARITY -1
 
 #define SIMPLE_WRAPPER_1(name) \
     sexpr * wrapped_ ## name (int n, sexpr *args[]) { \
@@ -1027,49 +1161,38 @@ sexpr* assoc(l_symbol symbol, sexpr *environment) {
         return name(args[0], args[1]);  \
     }
 
-sexpr *wrapped_eval(int n, sexpr *args[]) {
-    if (n != 1) {
-        raise_eval_error("eval takes exactly one argument.");
-    }
-    return eval(args[0], global);
-}
-
-
-
-struct builtin_func_def {
-    l_symbol identifier;
-    l_builtin func;
-    int arity;
-};
-
-#define VARIABLE_ARITY -1
 
 /* Make wrappers for all of these dang functions. */
+SIMPLE_WRAPPER_2(apply)
+
 SIMPLE_WRAPPER_2(cons)
 SIMPLE_WRAPPER_1(car)
 SIMPLE_WRAPPER_1(cdr)
 
+SIMPLE_WRAPPER_2(eq)
+SIMPLE_WRAPPER_1(atom)
+
+
 static struct builtin_func_def BUILT_INS[] = {
     { EVAL, wrapped_eval, 2 },
-    /*
     { APPLY, wrapped_apply, 2 },
-    */
 
     { S_CONS, wrapped_cons, 2 },
     { CAR, wrapped_car, 1 },
     { CDR, wrapped_cdr, 1 },
 
-    /*
-    { EQ, atom, 1 },
-    { ATOM, null, 1 },
+    { EQ, wrapped_eq, 1 },
+    { S_NULL, null, 1 },
+    { ATOM, wrapped_atom, 1 },
     { NOT, not, 1 },
 
+    { PLUS, plus, VARIABLE_ARITY },
+    { MUL, mul, VARIABLE_ARITY },
+    { NEG, sub, VARIABLE_ARITY },
+    { DIV, var_div, VARIABLE_ARITY },
+    /*
     { AND, and, VARIABLE_ARITY },
     { OR, or, VARIABLE_ARITY },
-    { PLUS, plus, VARIABLE_ARITY },
-    { SUB, sub, 2 },
-    { TIMES, times, VARIABLE_ARITY },
-    { DIV, div, VARIABLE_ARITY },
     */
 };
 

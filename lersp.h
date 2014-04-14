@@ -101,7 +101,7 @@ sexpr* eval(sexpr *expr, sexpr *environment);
 /**
  * Applies the function func to the given arguments.
  */
-sexpr* apply(sexpr *func, sexpr *args, sexpr *env);
+sexpr* apply(sexpr *func, sexpr *args);
 
 /**
  * Finds the associated expression in the given environment.
