@@ -579,6 +579,7 @@ sexpr* l_read(void) {
 
         case RBRACKET:
             if (depth < 1) {
+                depth = 0;
                 longjmp(top_level_exception, SYNTAX_ERROR);
             }
             depth--;
@@ -716,6 +717,7 @@ sexpr *eq(sexpr *a, sexpr *b) {
 
 
 static sexpr* eval_atom(sexpr *atom, sexpr *env);
+static sexpr* eval_cond(sexpr *conditions, sexpr *env);
 static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr *env);
 static sexpr* create_lambda(sexpr *formal_args, sexpr *body, sexpr *env);
 /* Equivalent to (map eval args). */
@@ -790,7 +792,7 @@ static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr *env) {
      */
     switch (symbol) {
         case COND:
-            raise_eval_error("COND not implemented");
+            return eval_cond(args, env);
             break;
 
         /* TODO: Should this even be a thing?  Or should it be combined with
@@ -802,15 +804,14 @@ static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr *env) {
         case LABEL:
             evaluation = eval(car(cdr(args)), env);
             update_environment(&global, car(args), evaluation);
-
-            break;
+            return evaluation;
 
         case LAMBDA:
-            evaluation = create_lambda(car(args), car(cdr(args)), env);
+            return create_lambda(car(args), car(cdr(args)), env);
             break;
 
         case QUOTE:
-            evaluation = car(args);
+            return car(args);
             break;
 
         default:
@@ -818,7 +819,6 @@ static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr *env) {
             return apply(assoc(symbol, env), eval_list(args, env));
     }
 
-    return evaluation;
 }
 
 /*
@@ -849,9 +849,34 @@ sexpr *eval_list(sexpr *args, sexpr *env) {
 #endif
 
     return head;
-
 }
 
+/* Returns the truthiness of the given expression. */
+bool is_truthy(sexpr *value) {
+    return (value != NULL)
+        && (value->type == SYMBOL)
+        && (value->symbol == T);
+}
+
+/* Evaluates the true condition list. */
+sexpr *eval_cond(sexpr *conditions, sexpr *env) {
+    sexpr *current, *cond_pair, *result;
+
+    for (current = conditions; current != NULL; current = cdr(current)) {
+        cond_pair = car(current);
+
+        result = eval(car(cond_pair), env);
+
+        if (is_truthy(result)) {
+            return eval(car(cdr(cond_pair)), env);
+        }
+    }
+
+    /* Scheme does this... but I think this is unambiguously a major error. */
+    return NULL;
+}
+
+/* Length of an s-expression. This might... be a built-in. */
 int slength(sexpr *list) {
     if (list == NULL) {
         return 0;
@@ -1024,8 +1049,7 @@ sexpr* not(int n, sexpr *argv[]) {
         raise_eval_error("null takes exactly one argument.");
     }
     sexpr *value = argv[0];
-    bool is_true = ((value != NULL) && (value->type == SYMBOL) && (value->symbol == T));
-    return to_lisp_boolean(!is_true);
+    return to_lisp_boolean(!is_truthy(value));
 }
 
 sexpr* new_number(l_number num) {
@@ -1211,6 +1235,9 @@ static void insert_initial_environment(void) {
 
         update_environment(&global, slookup(BUILT_INS[i].identifier), func);
     }
+
+    /* And also, T, which evaluates to itself. */
+    update_environment(&global, slookup(T), slookup(T));
 
 }
 
