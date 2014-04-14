@@ -785,7 +785,7 @@ static sexpr *eval_atom(sexpr *expr, sexpr *env) {
 
 /* Evaluates a cons cell. */
 static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr *env) {
-    sexpr *evaluation;
+    sexpr *evaluation, *temp_env;
 
     /*
      * Evaluate all special forms and built-in functions.
@@ -802,8 +802,14 @@ static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr *env) {
             break;
 
         case LABEL:
-            evaluation = eval(car(cdr(args)), env);
-            update_environment(&global, car(args), evaluation);
+            /* This one is weird. */
+            /* Update enivorment first... */
+            temp_env = update_environment(&global, car(args), NULL);
+            evaluation = eval(car(cdr(args)), temp_env);
+
+            /* Then MUTATE the environment. */
+            temp_env->car->cdr = evaluation;
+
             return evaluation;
 
         case LAMBDA:
