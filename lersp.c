@@ -27,11 +27,21 @@ static char INTRO_BANNER[] =
 static sexpr *next_free_cell;
 sexpr heap[HEAP_SIZE];
 
+/* Internal nil; having this explict makes the GC algorithm more elegant. */
+static sexpr nil = {
+    .type = CONS,
+    .reached = 0,
+    .car = &nil,
+    .cdr = &nil,
+};
+
+sexpr *const NIL = &nil;
+
 /* Points to the cell where the universe starts.  */
-static sexpr *global = NULL; // execution context?
+static sexpr *global = &nil; // execution context?
 
 /* List of (identifier . name) pairs. */
-static sexpr *name_list = NULL;
+static sexpr *name_list = &nil;
 /* Amount of symbols left to use. */
 static int next_symbol_id = 0;
 
@@ -102,14 +112,14 @@ void display_list(sexpr *head) {
     printf("(");
     do {
         display(current->car);
-        if (current->cdr != NULL) {
+        if (current->cdr != NIL) {
             printf(" ");
         }
 
         current = current->cdr;
-    } while ((current != NULL) && (current->type == CONS));
+    } while ((current != NIL) && (current->type == CONS));
 
-    if (current != NULL) {
+    if (current != NIL) {
         /* This must be the end of an improper list. */
         printf(". ");
         display(current);
@@ -119,7 +129,7 @@ void display_list(sexpr *head) {
 }
 
 void display(sexpr* expr) {
-    if (expr == NULL) {
+    if (expr == NIL) {
         printf("NIL");
         return;
     }
@@ -172,7 +182,7 @@ sexpr *lookup_pair(l_symbol symbol) {
     sexpr *entry = name_list;
     sexpr *name_pair, *identifier, *name;
 
-    assert(name_list != NULL);
+    assert(name_list != NIL);
 
     do {
         name_pair = entry->car;
@@ -189,12 +199,12 @@ sexpr *lookup_pair(l_symbol symbol) {
         }
 
         entry = entry->cdr;
-    } while (entry != NULL);
+    } while (entry != NIL);
 
     printf("Could not find symbol: %d\n", symbol);
     assert(0);
 
-    return NULL; /* For type-checking's sake. */
+    return NIL; /* For type-checking's sake. */
 }
 
 /**
@@ -202,7 +212,7 @@ sexpr *lookup_pair(l_symbol symbol) {
  */
 sexpr *slookup(l_symbol symbol) {
     sexpr *ssymbol = lookup_pair(symbol);
-    return (ssymbol == NULL) ? NULL : ssymbol->car;
+    return (ssymbol == NIL) ? NIL : ssymbol->car;
 }
 
 /**
@@ -225,16 +235,16 @@ void init(void) {
 }
 
 static void prepare_free_list(void) {
-    sexpr *last_value = NULL;
+    sexpr *last_value = NIL;
 
     /* Link every cell to the next in the free list. */
     for (int i = HEAP_SIZE - 1; i >= 0; i--) {
         sexpr *cell = heap + i;
 
         cell->type = CONS;
-        cell->car = NULL;
+        cell->car = NIL;
         cell->cdr = last_value;
-        cell->reached = false;
+        cell->reached = 0;
 
         last_value = cell;
     }
@@ -248,7 +258,7 @@ static l_symbol find_symbol_by_name(char *name) {
 
     current = name_list;
 
-    while (current != NULL) {
+    while (current != NIL) {
         pair = current->car;
 
         if (strcmp(name, pair->cdr->word) == 0) {
@@ -309,7 +319,7 @@ static char* INITIAL_SYMBOLS[] = {
     "+", "-", "/", "*", "<", ">",
 
     "F", "T",
-    "MAP", "REDUCE"
+    "MAP", "REDUCE", "GC"
 };
 
 
@@ -330,46 +340,105 @@ static void prepare_execution_context(void) {
     insert_initial_environment();
 }
 
+#if GC_DEBUG
+#define GC_DEBUG_PRINT(msg, cell) \
+    do {    \
+        printf(msg);    \
+        display(cell);  \
+        puts("");   \
+    while (0)
+#else
+#define GC_DEBUG_PRINT() ((void) 0)
+#endif
 
+#define NOT_VISITED     0
+#define FULLY_VISITED   3
+
+/*
+ * Implementation inspired by:
+ * [Gries06] D. Gries. Schorr-Waite Graph Marking Algorithm – Developed
+ *           With Style. (http://www.cs.cornell.edu/courses/cs312/2007fa/lectures/lec21-schorr-waite.pdf)
+ *           2006.
+ */
 static int mark_cells(sexpr *cell) {
     int count = 0;
+    sexpr *previous, *current, *vroot;
 
-    /* Handles non-null atoms. */
-    if (cell->type != CONS) {
-#if GC_DEBUG
-        printf("Reached: ");
-        display(cell);
-        puts("");
-#endif
-        cell->reached = true;
+    /* The sentinel node; this needs to be a valid node initialized in its
+     * second visit stage. Note the values of car and cdr are */
+    sexpr sentinel = {
+        .type = CONS,
+        .reached = 2,
+        .car = NULL,
+        .cdr = cell
+    };
 
-        return 1;
+    current = cell;
+    /* Note: vroot is the sentinel node that indicates termination. */
+    previous = vroot = &sentinel;
+
+    /* Abort the algorithm early if this node was already visited. */
+    if (current->reached == FULLY_VISITED) {
+        return 0;
     }
 
-    /* Handles cons cells. */
-    while ((cell != NULL) && (cell->type == CONS)) {
-        cell->reached = true;
-        count++;
+    while (current != vroot) {
+        assert(current->reached != FULLY_VISITED);
+
+        /* Visited current node once. */
+        current->reached++;
 
 #if GC_DEBUG
-        printf("Reached: (");
-        display(cell->car);
-        puts(" . ...)");
+        if (current->reached == FULLY_VISITED) {
+            count++;
+        }
 #endif
 
-        count += mark_cells(cell->car);
-        cell = cell->cdr;
-    }
+        /* Unconditionally mark the child if it is an atom.
+         * Note that, even though the code suggests only the left child is
+         * marked, the right child is marked due to the algorithm rotating its
+         * pointer into the car position. See [Gries06] for full case
+         * analysis. */
+        if (is_atom(current->car) && (current->car->reached != FULLY_VISITED)) {
+            assert(current->car->reached == NOT_VISITED);
+            current->car->reached = FULLY_VISITED;
+            count++;
+        }
 
-    /* Final check for improper lists. */
-    if (cell != NULL) {
-#if GC_DEBUG
-        printf("Reached (improper list): ");
-        display(cell);
-        puts("");
-#endif
-        cell->reached = true;
-        count++;
+        /* See [Gries06] for full case analysis. */
+        if ((current->reached == FULLY_VISITED)
+                || (current->car->reached == NOT_VISITED)) {
+            /* Traverse into whatever is in the "left" subgraph. */
+            /* Rotate values like so:
+            current, current->car, current->cdr, previous =
+                current->car, current->cdr, previous, current;
+            */
+            /* A bunch of temp pointers -- careful graph colouring can come up
+             * with a more elegant way to swap all this info. */
+            sexpr *_current = current,
+                  *_previous = previous,
+                  *_left = current->car,
+                  *_right = current->cdr;
+
+            current = _left;
+            _current->car = _right;
+            _current->cdr = _previous;
+            previous = _current;
+
+        } else {
+            /* Do not traverse further; simply rotate pointers. */
+            /* Rotate values like so:
+            current->car, current->cdr, previous =
+                current->cdr, previous, current->car;
+            */
+            sexpr *_right = current->cdr,
+                  *_previous = previous,
+                  *_left = current->car;
+
+            current->car = _right;
+            current->cdr = _previous;
+            previous = _left;
+        }
     }
 
     return count;
@@ -378,7 +447,7 @@ static int mark_cells(sexpr *cell) {
 /* TODO: Rewrite this! */
 static int mark_all_reachable_cells(void) {
     int count;
-    assert(global != NULL);
+    assert(global != NIL);
 
     count = mark_cells(global);
     count += mark_cells(name_list);
@@ -405,19 +474,13 @@ static int garbage_collect(void) {
     for (int i = 0; i < HEAP_SIZE; i++) {
         sexpr *cell = heap + i;
 
-        if (!cell->reached) {
-#if GC_DEBUG
-            printf("Did not reach ");
-            display(cell);
-            puts("");
-
-#endif
+        if (cell->reached != FULLY_VISITED) {
             /* Return the cell to the free list. */
             cell->cdr = next_free_cell;
             next_free_cell = cell;
             freed++;
         } else {
-            cell->reached = false;
+            cell->reached = NOT_VISITED;
         }
     }
 
@@ -433,10 +496,10 @@ sexpr *new_cell(void) {
 
     sexpr* cell = next_free_cell;
 
-    if (cell == NULL) {
+    if (cell == NIL) {
         garbage_collect();
         cell = next_free_cell;
-        if (cell == NULL)  {
+        if (cell == NIL)  {
             fprintf(stderr, "Ran out of cells in free list.\n");
             exit(-1);
         }
@@ -552,7 +615,7 @@ static sexpr* parse_list(void);
 sexpr* l_read(void) {
     static int depth = 0;
 
-    sexpr *expr = NULL;
+    sexpr *expr = NIL;
 
     enum token token;
     union token_data token_data;
@@ -582,12 +645,12 @@ sexpr* l_read(void) {
                 longjmp(top_level_exception, SYNTAX_ERROR);
             }
             depth--;
-            expr = NULL;
+            expr = NIL;
             break;
 
         case NONE:
             longjmp(top_level_exception, END_INPUT);
-            expr = NULL;
+            expr = NIL;
             /* Apparently this is a syntax error? */
             break;
     }
@@ -603,9 +666,9 @@ static sexpr* parse_list(void) {
     /* Read the first s-expr. */
     inner = l_read();
 
-    /* Don't bother allocating anything if it's NULL (such as if an RBRACKET
+    /* Don't bother allocating anything if it's NIL (such as if an RBRACKET
      * was returned. */
-    if (inner == NULL) {
+    if (inner == NIL) {
         return inner;
     }
 
@@ -615,7 +678,7 @@ static sexpr* parse_list(void) {
 
     inner = l_read();
     /* Build up the list in order. */
-    while (inner != NULL) {
+    while (inner != NIL) {
         current = new_cell();
         current->type = CONS;
         current->car = inner;
@@ -626,7 +689,7 @@ static sexpr* parse_list(void) {
         inner = l_read();
     }
 
-    last->cdr = NULL;
+    last->cdr = NIL;
 
     return head;
 }
@@ -639,7 +702,7 @@ static sexpr* parse_list(void) {
 #define raise_eval_error(msg) \
         fprintf(stderr, msg "\n"); \
         longjmp(top_level_exception, EVAL_ERROR); \
-        return NULL // Semicolon omitted; should be provided in program text.
+        return NIL // Semicolon omitted; should be provided in program text.
 
 
 sexpr *cons(sexpr* car, sexpr* cdr) {
@@ -653,7 +716,7 @@ sexpr *cons(sexpr* car, sexpr* cdr) {
 }
 
 sexpr *car(sexpr *cons_cell) {
-    if (cons_cell == NULL) {
+    if (cons_cell == NIL) {
         raise_eval_error("car called on nil");
     } else if (cons_cell->type != CONS) {
         raise_eval_error("car called on an atom");
@@ -663,7 +726,7 @@ sexpr *car(sexpr *cons_cell) {
 }
 
 sexpr *cdr(sexpr *cons_cell) {
-    if (cons_cell == NULL) {
+    if (cons_cell == NIL) {
         raise_eval_error("cdr called on NIL");
     } else if (cons_cell->type != CONS) {
         raise_eval_error("cdr called on an atom");
@@ -677,12 +740,12 @@ sexpr *to_lisp_boolean(bool result) {
         /* True is really weird, you guys... */
         return slookup(T);
     }
-    /* NULL is false... I guess. */
-    return NULL;
+    /* NIL is false... I guess. */
+    return NIL;
 }
 
 bool c_atom(sexpr *expr) {
-    if ((expr == NULL) || (expr->type != CONS)) {
+    if ((expr == NIL) || (expr->type != CONS)) {
         return true;
     } else {
         return false;
@@ -725,7 +788,7 @@ static sexpr* eval_list(sexpr *args, sexpr *env);
 sexpr* eval(sexpr *expr, sexpr *env) {
     sexpr* evaluation;
 
-    if (env == NULL) {
+    if (env == NIL) {
         env = global;
     }
 
@@ -752,7 +815,7 @@ sexpr *apply(sexpr *func, sexpr *args) {
     puts("");
 #endif
 
-    if (func == NULL) {
+    if (func == NIL) {
         raise_eval_error("Cannot apply NIL");
     }
 
@@ -763,14 +826,14 @@ sexpr *apply(sexpr *func, sexpr *args) {
     }
 
     raise_eval_error("First argument to apply is not callable");
-    return NULL;
+    return NIL;
 }
 
 
 
 static sexpr *eval_atom(sexpr *expr, sexpr *env) {
-    if (expr == NULL) {
-        return NULL;
+    if (expr == NIL) {
+        return NIL;
     }
 
     if (expr->type == SYMBOL) {
@@ -803,7 +866,7 @@ static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr *env) {
         case LABEL:
             /* This one is weird. */
             /* Update enivorment first... */
-            temp_env = update_environment(&global, car(args), NULL);
+            temp_env = update_environment(&global, car(args), NIL);
             evaluation = eval(car(cdr(args)), temp_env);
 
             /* Then MUTATE the environment. */
@@ -833,15 +896,15 @@ static sexpr* eval_form(l_symbol symbol, sexpr *args, sexpr *env) {
 sexpr *eval_list(sexpr *args, sexpr *env) {
     sexpr *head, *unevaluated, *current;
 
-    if (args == NULL) {
-        return NULL;
+    if (args == NIL) {
+        return NIL;
     }
 
-    current = head = cons(eval(car(args), env), NULL);
+    current = head = cons(eval(car(args), env), NIL);
     unevaluated = cdr(args);
 
-    while (unevaluated != NULL) {
-        current->cdr = cons(eval(car(unevaluated), env), NULL);
+    while (unevaluated != NIL) {
+        current->cdr = cons(eval(car(unevaluated), env), NIL);
         /* Advance positions in both lists. */
         unevaluated = unevaluated->cdr;
         current = current->cdr;
@@ -858,7 +921,7 @@ sexpr *eval_list(sexpr *args, sexpr *env) {
 
 /* Returns the truthiness of the given expression. */
 bool is_truthy(sexpr *value) {
-    return (value != NULL)
+    return (value != NIL)
         && (value->type == SYMBOL)
         && (value->symbol == T);
 }
@@ -867,7 +930,7 @@ bool is_truthy(sexpr *value) {
 sexpr *eval_cond(sexpr *conditions, sexpr *env) {
     sexpr *current, *cond_pair, *result;
 
-    for (current = conditions; current != NULL; current = cdr(current)) {
+    for (current = conditions; current != NIL; current = cdr(current)) {
         cond_pair = car(current);
 
         result = eval(car(cond_pair), env);
@@ -878,12 +941,12 @@ sexpr *eval_cond(sexpr *conditions, sexpr *env) {
     }
 
     /* Scheme does this... but I think this is unambiguously a major error. */
-    return NULL;
+    return NIL;
 }
 
 /* Length of an s-expression. This might... be a built-in. */
 int slength(sexpr *list) {
-    if (list == NULL) {
+    if (list == NIL) {
         return 0;
     } else {
         return 1 + slength(cdr(list));
@@ -918,8 +981,8 @@ sexpr *bind_args(sexpr *free_vars, sexpr* values, sexpr *old_env) {
     symbol_pair = free_vars;
     value_pair = values;
 
-    while (symbol_pair != NULL) {
-        if (value_pair == NULL) {
+    while (symbol_pair != NIL) {
+        if (value_pair == NIL) {
             raise_eval_error("Not enough arguments for function.");
         }
 
@@ -929,7 +992,7 @@ sexpr *bind_args(sexpr *free_vars, sexpr* values, sexpr *old_env) {
         symbol_pair = cdr(symbol_pair);
     }
 
-    if (symbol_pair != NULL) {
+    if (symbol_pair != NIL) {
         fprintf(stderr, "Warning: Too many aruguments for function.");
     }
 
@@ -937,7 +1000,7 @@ sexpr *bind_args(sexpr *free_vars, sexpr* values, sexpr *old_env) {
 }
 
 sexpr *apply_lambda(sexpr *lambda, sexpr *args) {
-    assert((lambda != NULL) && (lambda->type == FUNCTION));
+    assert((lambda != NIL) && (lambda->type == FUNCTION));
 
     sexpr *body = lambda->car;
     sexpr *free_vars = lambda->cdr->car;
@@ -1001,14 +1064,14 @@ static sexpr* create_lambda(sexpr *formal_args, sexpr *body, sexpr *env) {
 sexpr* assoc(l_symbol symbol, sexpr *environment) {
     sexpr *current, *pair;
 
-    if (environment == NULL) {
+    if (environment == NIL) {
         environment = global;
     }
 
     current = environment;
 
     /* Find the first symbol. */
-    while (current != NULL) {
+    while (current != NIL) {
         pair = current->car;
 
         if (pair->car->symbol == symbol) {
@@ -1022,7 +1085,7 @@ sexpr* assoc(l_symbol symbol, sexpr *environment) {
     fprintf(stderr, "Undefined symbol: %s\n", lookup(symbol));
     longjmp(top_level_exception, EVAL_ERROR);
 
-    return NULL;
+    return NIL;
 }
 
 
@@ -1040,7 +1103,7 @@ sexpr* null(int n, sexpr *argv[]) {
     if (n != 1) {
         raise_eval_error("null takes exactly one argument.");
     }
-    return to_lisp_boolean(argv[0] == NULL);
+    return to_lisp_boolean(argv[0] == NIL);
 }
 
 sexpr* not(int n, sexpr *argv[]) {
@@ -1067,7 +1130,7 @@ sexpr* plus(int argc, sexpr *argv[]) {
     for (i = 0; i < argc; i++) {
         value = argv[i];
 
-        if ((value == NULL) || (value->type != NUMBER)) {
+        if ((value == NIL) || (value->type != NUMBER)) {
             raise_eval_error("+ given non-numeric arguments.");
         }
         total += argv[i]->number;
@@ -1084,7 +1147,7 @@ sexpr* mul(int argc, sexpr *argv[]) {
     for (i = 0; i < argc; i++) {
         value = argv[i];
 
-        if ((value == NULL) || (value->type != NUMBER)) {
+        if ((value == NIL) || (value->type != NUMBER)) {
             raise_eval_error("* given non-numeric arguments.");
         }
         product *= argv[i]->number;
@@ -1099,7 +1162,7 @@ sexpr *neg(sexpr *arg) {
 
 sexpr *var_sub(int argc, sexpr *argv[]) {
     int i;
-    assert((argc > 1) && (argv[0] != NULL) && (argv[0]->type == NUMBER));
+    assert((argc > 1) && (argv[0] != NIL) && (argv[0]->type == NUMBER));
 
     /* We can assume that argv[0] is a number. */
     l_number total = argv[0]->number;
@@ -1108,7 +1171,7 @@ sexpr *var_sub(int argc, sexpr *argv[]) {
     for (i = 1; i < argc; i++) {
         value = argv[i];
 
-        if ((value == NULL) || (value->type != NUMBER)) {
+        if ((value == NIL) || (value->type != NUMBER)) {
             raise_eval_error("* given non-numeric arguments.");
         }
 
@@ -1119,7 +1182,7 @@ sexpr *var_sub(int argc, sexpr *argv[]) {
 }
 
 sexpr *sub(int argc, sexpr *argv[]) {
-    if ((argc < 1) || (argv[0] == NULL) || (argv[0]->type != NUMBER)) {
+    if ((argc < 1) || (argv[0] == NIL) || (argv[0]->type != NUMBER)) {
         raise_eval_error("- takes at least 1 numeric argument.");
     }
 
@@ -1140,7 +1203,7 @@ sexpr *var_div(int argc, sexpr *argv[]) {
     for (i = 0; i < argc; i++) {
         value = argv[i];
 
-        if ((value == NULL) || (value->type != NUMBER)) {
+        if ((value == NIL) || (value->type != NUMBER)) {
             raise_eval_error("* given non-numeric arguments.");
         }
         divisor = argv[i]->number;
@@ -1195,6 +1258,12 @@ SIMPLE_WRAPPER_1(cdr)
 SIMPLE_WRAPPER_2(eq)
 SIMPLE_WRAPPER_1(atom)
 
+/* Force a garbage collection. */
+sexpr *gc(int n, sexpr *args[]) {
+    garbage_collect();
+    return NIL;
+}
+
 
 static struct builtin_func_def BUILT_INS[] = {
     { EVAL, wrapped_eval, 2 },
@@ -1213,10 +1282,7 @@ static struct builtin_func_def BUILT_INS[] = {
     { MUL, mul, VARIABLE_ARITY },
     { NEG, sub, VARIABLE_ARITY },
     { DIV, var_div, VARIABLE_ARITY },
-    /*
-    { AND, and, VARIABLE_ARITY },
-    { OR, or, VARIABLE_ARITY },
-    */
+    { GC, gc, 0 },
 };
 
 

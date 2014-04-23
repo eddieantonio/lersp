@@ -31,6 +31,7 @@
 #define T       23
 #define MAP     24
 #define REDUCE  25
+#define GC      26
 
 /* setjmp exception return values. */
 #define NOT_PARSED      0 // Initial setjmp.
@@ -43,8 +44,20 @@
 typedef unsigned int    l_symbol;
 typedef double          l_number;
 
+/* TODO: Prefix all types with `T_` */
 enum sexpr_type {
-    CONS, NUMBER, SYMBOL, FUNCTION, BUILT_IN_FUNCTION,  WORD /* a real string data type? */
+    CONS,
+
+    NUMBER,
+    SYMBOL,
+    FUNCTION, /* Rename to: lambda. */
+    BUILT_IN_FUNCTION,
+    WORD, /* Deprecated. */
+
+    /* Unimplemented types: */
+    BOOLEAN, /* Two singleton values: #T, #F. */
+    END_OF_FILE, /* One singleton value: #EOF */
+    STRING, 
 };
 
 typedef struct s_expression sexpr;
@@ -59,8 +72,9 @@ typedef sexpr* (* l_builtin)(int, sexpr *[]);
  *
  */
 struct s_expression {
+    unsigned int reached : 2; // for Deutsch-Schor-Waite garbage collection
+
     enum sexpr_type type;
-    bool reached; // for garbage collection
     union {
         l_number number;
         l_symbol symbol;
@@ -81,10 +95,12 @@ struct s_expression {
     };
 };
 
+#define is_atom(value) (value->type != CONS)
+#define is_cons(value) (value->type == CONS)
 
 /**
  * Reads an s-expression from stdin.
- * Calls longjpm
+ * Calls longjpm on syntax error.
  */
 sexpr *l_read(void);
 
@@ -152,3 +168,7 @@ sexpr *cons(sexpr*, sexpr*);
  */
 extern sexpr heap[];
 
+/**
+ * Lisp Nil.
+ */
+extern sexpr *const NIL;

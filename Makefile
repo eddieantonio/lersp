@@ -1,5 +1,5 @@
 CFLAGS = -g
-CPPFLAGS =
+CPPFLAGS = -DGC_DEBUG=1
 
 BIN = lersp
 
