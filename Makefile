@@ -1,8 +1,7 @@
 CFLAGS = -g
-CPPFLAGS = -DGC_DEBUG=1
+CPPFLAGS =
 
 BIN = lersp
-
 
 all: $(BIN)
 

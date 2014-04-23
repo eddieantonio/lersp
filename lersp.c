@@ -68,7 +68,7 @@ void repl(void) {
     sexpr *evaluation;
 
     while (1) {
-        printf("#=> ");
+        printf(";=> ");
 
         parse_status = setjmp(top_level_exception);
         if (parse_status == NOT_PARSED) {
@@ -158,7 +158,6 @@ void display(sexpr* expr) {
 
 
 void print(sexpr *expr) {
-    printf(";=> ");
     display(expr);
     puts("");
 }
@@ -955,7 +954,6 @@ sexpr *apply_lambda(sexpr *lambda, sexpr *args) {
 
 }
 
-
 sexpr *update_environment(sexpr **env, sexpr* symbol, sexpr *value) {
     sexpr *binding = new_cell();
     binding->type = CONS;
@@ -977,11 +975,6 @@ sexpr *update_environment(sexpr **env, sexpr* symbol, sexpr *value) {
 #endif
 
     return *env;
-}
-
-static sexpr* evcon(sexpr *expr, sexpr *environment) {
-    /* TODO */
-    return NULL;
 }
 
 /**
